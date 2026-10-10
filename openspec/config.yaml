@@ -1,0 +1,20 @@
+schema: spec-driven
+
+context: |
+  Enterprise identity management for WordPress powered by WorkOS.
+  This repository contains both plugin code and OpenSpec planning artifacts.
+  Stack: PHP 7.4+, WordPress 5.9+, TypeScript, React, bun, Composer.
+  Follow AGENTS.md for architecture, coding conventions, and verification.
+  Run OpenSpec commands from the repository root.
+  The ignored .wip/ directory contains historical research and unfinished plans.
+  Verify that research against the relevant branch before using it in specs.
+  Baseline specs describe current behavior; change specs describe intended changes.
+
+rules:
+  proposal:
+    - Identify related existing branch work and keep each change scoped to a coherent outcome.
+  design:
+    - Distinguish verified current behavior from proposed behavior and unresolved decisions.
+  tasks:
+    - Include verification appropriate to the change and follow the AGENTS.md testing instructions.
+    - Verify existing branch work before marking it complete.

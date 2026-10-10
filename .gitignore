@@ -11,6 +11,7 @@
 
 # Local scratch / drafts
 /tmp/
+/.wip/
 
 # PHPStan baseline — fix-everything policy; do not commit a baseline
 # file without team discussion (see AGENTS.md > Static Analysis).

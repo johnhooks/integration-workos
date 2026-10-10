@@ -1,5 +1,18 @@
 # Integration with WorkOS - Agent Instructions
 
+## OpenSpec planning
+
+OpenSpec lives in this repository. Run its commands from the repository root.
+Use `$openspec-explore` to investigate work and `$openspec-propose` to draft a
+change. Keep baseline specifications in `openspec/specs/` and proposed changes
+in `openspec/changes/`, alongside the implementation they describe.
+
+The local `.wip/` directory contains historical research and unfinished plans.
+It is ignored by Git. Verify its claims against the relevant branch before
+promoting them into specs; do not copy the legacy material wholesale into Git.
+Distinguish current behavior from proposed behavior, and verify implementation
+and relevant tests before archiving a change.
+
 ## Project Overview
 
 Enterprise identity management for WordPress powered by WorkOS. SSO, directory sync, MFA, and user management.
