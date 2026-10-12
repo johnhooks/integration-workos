@@ -14,6 +14,9 @@ defined( 'ABSPATH' ) || exit;
  */
 class Manager {
 
+	/** Maximum records fetched in a single batch. */
+	private const MEMBERSHIP_CACHE_BATCH_SIZE = 200;
+
 	/**
 	 * Constructor — register webhook handlers.
 	 */
@@ -444,6 +447,61 @@ class Manager {
 		wp_cache_set( $cache_key, $result, 'workos' );
 
 		return $result;
+	}
+
+	/**
+	 * Prime membership caches for users, including users without memberships.
+	 *
+	 * Uses the same keys as get_user_orgs(), so membership writes invalidate
+	 * both individual and batch reads. Only cache misses are queried.
+	 *
+	 * @param int[] $user_ids WordPress user IDs.
+	 */
+	public static function prime_user_orgs( array $user_ids ): void {
+		global $wpdb;
+
+		$missing = [];
+		foreach ( array_unique( array_map( 'absint', $user_ids ) ) as $user_id ) {
+			if ( $user_id && false === wp_cache_get( "user_orgs_{$user_id}", 'workos' ) ) {
+				$missing[] = $user_id;
+			}
+		}
+
+		$org_table = $wpdb->prefix . 'workos_organizations';
+		$mem_table = $wpdb->prefix . 'workos_org_memberships';
+
+		foreach ( array_chunk( $missing, self::MEMBERSHIP_CACHE_BATCH_SIZE ) as $ids ) {
+			$placeholders = implode( ', ', array_fill( 0, count( $ids ), '%d' ) );
+			// The dynamic list contains only integer placeholders; values are prepared.
+			// phpcs:disable WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+			$result = $wpdb->get_results(
+				$wpdb->prepare(
+					"SELECT o.*, m.user_id AS membership_user_id, m.workos_role, m.wp_role, m.joined_at
+					FROM %i o
+					INNER JOIN %i m ON o.id = m.org_id
+					WHERE m.user_id IN ($placeholders)
+					ORDER BY o.name",
+					array_merge( [ $org_table, $mem_table ], $ids )
+				)
+			);
+			// phpcs:enable WordPress.DB.PreparedSQL.InterpolatedNotPrepared, WordPress.DB.PreparedSQLPlaceholders.ReplacementsWrongNumber
+
+			if ( $wpdb->last_error ) {
+				continue;
+			}
+
+			$grouped = array_fill_keys( $ids, [] );
+			foreach ( $result as $row ) {
+				$user_id = (int) $row->membership_user_id;
+				unset( $row->membership_user_id );
+				$grouped[ $user_id ][] = $row;
+			}
+
+			foreach ( $grouped as $user_id => $orgs ) {
+				wp_cache_set( "user_orgs_{$user_id}", $orgs, 'workos' );
+			}
+		}
 	}
 
 	/**

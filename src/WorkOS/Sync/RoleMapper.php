@@ -14,6 +14,9 @@ defined( 'ABSPATH' ) || exit;
  */
 class RoleMapper {
 
+	/** Maximum records fetched in a single batch. */
+	private const ROLE_CHECK_BATCH_SIZE = 200;
+
 	/**
 	 * Default role mapping.
 	 */
@@ -388,42 +391,51 @@ class RoleMapper {
 
 		$mem_table = $wpdb->prefix . 'workos_org_memberships';
 
-		$memberships = $wpdb->get_results( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
-			$wpdb->prepare(
-				"SELECT user_id, workos_role FROM %i WHERE org_id = %d AND workos_role != ''",
-				$mem_table,
-				$local_org->id
-			)
-		);
-
-		if ( empty( $memberships ) ) {
-			return [];
-		}
-
 		$role_map    = self::get_role_map();
 		$out_of_sync = [];
+		$last_id     = 0;
 
-		foreach ( $memberships as $membership ) {
-			$user = get_user_by( 'id', $membership->user_id );
-			if ( ! $user ) {
-				continue;
+		do {
+			$memberships = $wpdb->get_results( // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
+				$wpdb->prepare(
+					"SELECT id, user_id, workos_role FROM %i WHERE org_id = %d AND workos_role != '' AND id > %d ORDER BY id ASC LIMIT %d",
+					$mem_table,
+					$local_org->id,
+					$last_id,
+					self::ROLE_CHECK_BATCH_SIZE
+				)
+			);
+
+			if ( empty( $memberships ) ) {
+				break;
 			}
 
-			$workos_role    = $membership->workos_role;
-			$expected       = $role_map[ $workos_role ] ?? $role_map['member'] ?? 'subscriber';
-			$actual_roles   = $user->roles;
-			$actual_wp_role = ! empty( $actual_roles ) ? $actual_roles[0] : '';
+			// Prime native user and metadata caches once per batch, not per row.
+			cache_users( array_map( 'intval', wp_list_pluck( $memberships, 'user_id' ) ) );
+			foreach ( $memberships as $membership ) {
+				$last_id = (int) $membership->id;
+				$user    = get_user_by( 'id', $membership->user_id );
+				if ( ! $user ) {
+					continue;
+				}
 
-			if ( $expected !== $actual_wp_role ) {
-				$out_of_sync[] = [
-					'user_id'          => (int) $membership->user_id,
-					'display_name'     => $user->display_name,
-					'workos_role'      => $workos_role,
-					'expected_wp_role' => $expected,
-					'actual_wp_role'   => $actual_wp_role,
-				];
+				$workos_role    = $membership->workos_role;
+				$expected       = $role_map[ $workos_role ] ?? $role_map['member'] ?? 'subscriber';
+				$actual_roles   = $user->roles;
+				$actual_wp_role = ! empty( $actual_roles ) ? $actual_roles[0] : '';
+
+				if ( $expected !== $actual_wp_role ) {
+					$out_of_sync[] = [
+						'user_id'          => (int) $membership->user_id,
+						'display_name'     => $user->display_name,
+						'workos_role'      => $workos_role,
+						'expected_wp_role' => $expected,
+						'actual_wp_role'   => $actual_wp_role,
+					];
+				}
 			}
-		}
+			$has_more = count( $memberships ) === self::ROLE_CHECK_BATCH_SIZE;
+		} while ( $has_more );
 
 		return $out_of_sync;
 	}

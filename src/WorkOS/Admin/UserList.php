@@ -10,6 +10,7 @@
 
 namespace WorkOS\Admin;
 
+use WorkOS\Organization\Manager;
 use WorkOS\Sync\RoleMapper;
 use WorkOS\Sync\UserSync;
 use WorkOS\Vendor\StellarWP\SuperGlobals\SuperGlobals;
@@ -27,6 +28,7 @@ class UserList {
 	public function __construct() {
 		add_filter( 'manage_users_columns', [ $this, 'add_column' ] );
 		add_filter( 'manage_users_custom_column', [ $this, 'render_column' ], 10, 3 );
+		add_action( 'manage_users_extra_tablenav', [ $this, 'prime_memberships' ] );
 		add_filter( 'bulk_actions-users', [ $this, 'add_bulk_action' ] );
 		add_filter( 'handle_bulk_actions-users', [ $this, 'handle_bulk_action' ], 10, 3 );
 		add_action( 'admin_init', [ $this, 'handle_single_sync' ] );
@@ -34,6 +36,22 @@ class UserList {
 		add_action( 'admin_notices', [ $this, 'render_notices' ] );
 		add_filter( 'views_users', [ $this, 'add_out_of_sync_view' ] );
 		add_action( 'pre_get_users', [ $this, 'filter_out_of_sync_users' ] );
+	}
+
+	/**
+	 * Prime WorkOS memberships for the displayed page before rendering rows.
+	 *
+	 * @action manage_users_extra_tablenav
+	 * @param string $which Navigation position.
+	 */
+	public function prime_memberships( string $which ): void {
+		global $wp_list_table;
+
+		if ( 'top' !== $which || ! $wp_list_table instanceof \WP_Users_List_Table ) {
+			return;
+		}
+
+		Manager::prime_user_orgs( wp_list_pluck( $wp_list_table->items, 'ID' ) );
 	}
 
 	/**

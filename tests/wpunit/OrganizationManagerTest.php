@@ -218,4 +218,96 @@ class OrganizationManagerTest extends WPTestCase {
 		$this->assertSame( 'admin', $user_orgs[0]->workos_role );
 		$this->assertSame( 'administrator', $user_orgs[0]->wp_role );
 	}
+	/**
+	 * Batch priming groups memberships and caches misses without per-user SQL.
+	 */
+	public function test_prime_user_orgs_batches_and_invalidates(): void {
+		global $wpdb;
+		$users = self::factory()->user->create_many( 3 );
+		$alpha = Manager::upsert_organization( [ 'id' => 'org_alpha', 'name' => 'Alpha' ] );
+		$zulu  = Manager::upsert_organization( [ 'id' => 'org_zulu', 'name' => 'Zulu' ] );
+		Manager::add_membership( $zulu, $users[0], [ 'workos_role' => 'admin' ] );
+		Manager::add_membership( $alpha, $users[0] );
+		Manager::add_membership( $alpha, $users[1] );
+
+		$before = $wpdb->num_queries;
+		Manager::prime_user_orgs( array_merge( $users, [ $users[0], 0 ] ) );
+		$this->assertSame( 1, $wpdb->num_queries - $before );
+		$this->assertSame( [ 'Alpha', 'Zulu' ], wp_list_pluck( Manager::get_user_orgs( $users[0] ), 'name' ) );
+		$this->assertCount( 1, Manager::get_user_orgs( $users[1] ) );
+		$this->assertSame( [], Manager::get_user_orgs( $users[2] ) );
+		Manager::prime_user_orgs( $users );
+		$this->assertSame( 1, $wpdb->num_queries - $before );
+
+		Manager::add_membership( $alpha, $users[2] );
+		$this->assertCount( 1, Manager::get_user_orgs( $users[2] ) );
+		Manager::update_membership_role( $users[1], 'org_alpha', 'editor', 'editor' );
+		$this->assertSame( 'editor', Manager::get_user_orgs( $users[1] )[0]->workos_role );
+		Manager::remove_membership( $alpha, $users[1] );
+		$this->assertSame( [], Manager::get_user_orgs( $users[1] ) );
+	}
+
+	/**
+	 * Cold role scans batch native user reads and retain comparison semantics.
+	 */
+	public function test_role_scan_batches_users_across_membership_pages(): void {
+		global $wpdb;
+		remove_all_actions( 'set_user_role' );
+		$org_id = Manager::upsert_organization( [ 'id' => 'org_configured', 'name' => 'Configured' ] );
+		$users  = self::factory()->user->create_many( 201, [ 'role' => 'subscriber' ] );
+		foreach ( $users as $user_id ) {
+			Manager::add_membership( $org_id, $user_id, [ 'workos_role' => 'admin' ] );
+			clean_user_cache( $user_id );
+		}
+		// Warm configuration/organization independently of the measured scan.
+		Manager::get_by_workos_id( 'org_configured' );
+		\WorkOS\Sync\RoleMapper::get_role_map();
+
+		$before = $wpdb->num_queries;
+		$report = \WorkOS\Sync\RoleMapper::get_out_of_sync_users();
+		$queries = $wpdb->num_queries - $before;
+
+		$this->assertCount( 201, $report );
+		$this->assertSame( $users, array_column( $report, 'user_id' ) );
+		$this->assertSame( 'administrator', $report[0]['expected_wp_role'] );
+		$this->assertSame( 'subscriber', $report[0]['actual_wp_role'] );
+		$this->assertLessThanOrEqual( 8, $queries, 'Two batches must not perform per-user reads.' );
+
+		$before = $wpdb->num_queries;
+		Manager::prime_user_orgs( $users );
+		$this->assertSame( 2, $wpdb->num_queries - $before );
+		foreach ( $users as $user_id ) {
+			$this->assertSame( 'admin', Manager::get_user_orgs( $user_id )[0]->workos_role );
+		}
+		$this->assertSame( 2, $wpdb->num_queries - $before );
+	}
+
+	/**
+	 * Rendering navigation primes only the displayed users before their columns.
+	 */
+	public function test_users_table_primes_visible_memberships(): void {
+		global $wpdb, $wp_list_table;
+		require_once ABSPATH . 'wp-admin/includes/class-wp-list-table.php';
+		require_once ABSPATH . 'wp-admin/includes/class-wp-users-list-table.php';
+		$previous_table = $wp_list_table;
+		new \WorkOS\Admin\UserList();
+		$users = self::factory()->user->create_many( 3 );
+		$org_id = Manager::upsert_organization( [ 'id' => 'org_visible', 'name' => 'Visible' ] );
+		foreach ( $users as $id ) {
+			Manager::add_membership( $org_id, $id );
+		}
+		$wp_list_table = new \WP_Users_List_Table( [ 'screen' => 'users' ] );
+		$wp_list_table->items = [ get_userdata( $users[0] ), get_userdata( $users[1] ) ];
+		try {
+			$before = $wpdb->num_queries;
+			do_action( 'manage_users_extra_tablenav', 'top' );
+			$this->assertCount( 1, Manager::get_user_orgs( $users[0] ) );
+			$this->assertCount( 1, Manager::get_user_orgs( $users[1] ) );
+			$this->assertSame( 1, $wpdb->num_queries - $before );
+			$this->assertFalse( wp_cache_get( "user_orgs_{$users[2]}", 'workos' ) );
+		} finally {
+			$wp_list_table = $previous_table;
+		}
+	}
+
 }

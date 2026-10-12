@@ -310,4 +310,39 @@ class AdminUsersRestApiTest extends WPTestCase {
 		$this->assertArrayHasKey( 'error', $body );
 		$this->assertNotEmpty( $body['error'] );
 	}
+	/**
+	 * Local linkage is resolved once for the full remote page.
+	 */
+	public function test_local_links_are_batched_for_the_remote_page(): void {
+		remove_all_actions( 'user_register' );
+		$admin = self::factory()->user->create( [ 'role' => 'administrator' ] );
+		wp_set_current_user( $admin );
+		$users = self::factory()->user->create_many( 3 );
+		$remote = [];
+		foreach ( $users as $user_id ) {
+			$id = 'user_batch_' . $user_id;
+			update_user_meta( $user_id, '_workos_user_id', $id );
+			$remote[] = [ 'id' => $id ];
+			clean_user_cache( $user_id );
+		}
+		$remote[] = [ 'id' => 'user_not_linked' ];
+		$this->queue_response( 200, [ 'data' => $remote ] );
+		$queries = [];
+		$capture = static function ( $query ) use ( &$queries ) {
+			if ( '_workos_user_id' === $query->get( 'meta_key' ) ) {
+				$queries[] = $query->get( 'meta_value' );
+			}
+		};
+		add_action( 'pre_get_users', $capture );
+		try {
+			$response = $this->dispatch();
+		} finally {
+			remove_action( 'pre_get_users', $capture );
+		}
+
+		$this->assertSame( 200, $response->get_status() );
+		$this->assertSame( array_merge( $users, [ 0 ] ), array_column( $response->get_data()['data'], 'wp_user_id' ) );
+		$this->assertSame( [ array_column( $remote, 'id' ) ], $queries );
+	}
+
 }

@@ -169,15 +169,16 @@ class RestApi {
 			);
 		}
 
+		$remote_users   = isset( $result['data'] ) && is_array( $result['data'] ) ? $result['data'] : [];
+		$linked_users   = $this->resolve_local_users( array_column( $remote_users, 'id' ) );
 		$environment_id = Config::get_environment_id();
-		$users          = isset( $result['data'] ) && is_array( $result['data'] )
-			? array_map(
-				function ( $user ) use ( $environment_id ) {
-					return $this->shape_user( is_array( $user ) ? $user : [], $environment_id );
-				},
-				$result['data']
-			)
-			: [];
+		$users          = array_map(
+			function ( $user ) use ( $environment_id, $linked_users ) {
+				$user = is_array( $user ) ? $user : [];
+				return $this->shape_user( $user, $environment_id, $linked_users[ $user['id'] ?? '' ] ?? 0 );
+			},
+			$remote_users
+		);
 
 		$metadata = isset( $result['list_metadata'] ) && is_array( $result['list_metadata'] )
 			? $result['list_metadata']
@@ -193,6 +194,38 @@ class RestApi {
 			],
 			200
 		);
+	}
+
+	/**
+	 * Resolve local users for a remote page in one query, priming native caches.
+	 *
+	 * @param string[] $workos_ids WorkOS user IDs from the current page.
+	 * @return array<string, int> WordPress user IDs keyed by WorkOS user ID.
+	 */
+	private function resolve_local_users( array $workos_ids ): array {
+		$workos_ids = array_values( array_unique( array_filter( $workos_ids ) ) );
+		if ( ! $workos_ids ) {
+			return [];
+		}
+
+		$linked_users = [];
+		$wp_users     = get_users(
+			[
+				'meta_key'     => '_workos_user_id',
+				'meta_value'   => $workos_ids,
+				'meta_compare' => 'IN',
+				'number'       => -1,
+				'count_total'  => false,
+			]
+		);
+		foreach ( $wp_users as $wp_user ) {
+			$workos_id = (string) get_user_meta( $wp_user->ID, '_workos_user_id', true );
+			if ( ! isset( $linked_users[ $workos_id ] ) ) {
+				$linked_users[ $workos_id ] = (int) $wp_user->ID;
+			}
+		}
+
+		return $linked_users;
 	}
 
 	/**
@@ -243,10 +276,11 @@ class RestApi {
 	 *
 	 * @param array  $user           Upstream user object.
 	 * @param string $environment_id Active WorkOS environment ID (for the deep link).
+	 * @param int    $wp_user_id     Linked WordPress user ID, or zero.
 	 *
 	 * @return array<string, mixed>
 	 */
-	private function shape_user( array $user, string $environment_id ): array {
+	private function shape_user( array $user, string $environment_id, int $wp_user_id ): array {
 		$id    = isset( $user['id'] ) ? (string) $user['id'] : '';
 		$email = isset( $user['email'] ) ? (string) $user['email'] : '';
 
@@ -257,25 +291,6 @@ class RestApi {
 				rawurlencode( $environment_id ),
 				rawurlencode( $id )
 			);
-		}
-
-		// Resolve the local WP user_id (if the user is linked) so the React
-		// row can wire up the "Send password reset" trigger that lives at
-		// `POST /workos/v1/admin/users/{wp_user_id}/password-reset`. Empty
-		// when the WorkOS user has no matching WP row yet.
-		$wp_user_id = 0;
-		if ( '' !== $id ) {
-			$users = get_users(
-				[
-					'meta_key'   => '_workos_user_id',
-					'meta_value' => $id,
-					'number'     => 1,
-					'fields'     => 'ID',
-				]
-			);
-			if ( ! empty( $users ) ) {
-				$wp_user_id = (int) $users[0];
-			}
 		}
 
 		return [
